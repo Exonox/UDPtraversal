@@ -10,13 +10,15 @@
     <video id="localVideo" autoplay playsinline></video>
     <video id="remoteVideo" autoplay playsinline></video>
     <button onclick="startCall()">Start Call</button>
-    
+    <button onclick="endCall()">End Call</button>
+
     <script>
-        const ws = new WebSocket("ws://localhost:3000");
+        const ws = new WebSocket("ws://156.62.140.74:3000");
         let peerConnection;
         let localStream;
         let remoteStream;
         let myId = Math.random().toString(36).substring(7);
+        let peerId;
 
         ws.onopen = () => ws.send(JSON.stringify({ type: "register", id: myId }));
 
@@ -24,7 +26,7 @@
             peerConnection = new RTCPeerConnection({
                 iceServers: [
                     {
-                        urls: "server.bcis-rnd.xyz:3478",
+                        urls: "turn:server.bcis-rnd.xyz:3478", // Correctly formatted TURN server URL
                         username: "guest",
                         credential: "somepassword"
                     }
@@ -38,26 +40,56 @@
 
             peerConnection.onicecandidate = event => {
                 if (event.candidate) {
-                    ws.send(JSON.stringify({ type: "candidate", to: "peer", candidate: event.candidate }));
+                    ws.send(JSON.stringify({ type: "candidate", to: peerId, candidate: event.candidate }));
                 }
+            };
+
+            peerConnection.oniceconnectionstatechange = () => {
+                console.log(`ICE connection state: ${peerConnection.iceConnectionState}`);
+                if (peerConnection.iceConnectionState === 'failed') {
+                    console.error('ICE connection failed');
+                }
+            };
+
+            peerConnection.onerror = error => {
+                console.error('Peer connection error:', error);
             };
         }
 
         async function startCall() {
             createPeerConnection();
-            localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-            document.getElementById("localVideo").srcObject = localStream;
+            try {
+                localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                document.getElementById("localVideo").srcObject = localStream;
 
-            localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+                localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
 
-            let offer = await peerConnection.createOffer();
-            await peerConnection.setLocalDescription(offer);
-            ws.send(JSON.stringify({ type: "offer", to: "peer", offer }));
+                let offer = await peerConnection.createOffer();
+                await peerConnection.setLocalDescription(offer);
+                ws.send(JSON.stringify({ type: "offer", to: peerId, offer }));
+            } catch (error) {
+                console.error('Error accessing media devices:', error);
+            }
+        }
+
+        function endCall() {
+            if (peerConnection) {
+                peerConnection.close();
+                peerConnection = null;
+            }
+            if (localStream) {
+                localStream.getTracks().forEach(track => track.stop());
+                localStream = null;
+            }
+            document.getElementById("localVideo").srcObject = null;
+            document.getElementById("remoteVideo").srcObject = null;
+            ws.close();
         }
 
         ws.onmessage = async (message) => {
             let data = JSON.parse(message.data);
             if (data.type === "offer") {
+                peerId = data.from;
                 createPeerConnection();
                 await peerConnection.setRemoteDescription(new RTCSessionDescription(data.offer));
                 let answer = await peerConnection.createAnswer();
