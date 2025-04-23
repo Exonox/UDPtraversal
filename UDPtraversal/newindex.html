@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebRTC TURN Only</title>
+</head>
+<body>
+    <h2>WebRTC (TURN Only)</h2>
+    <video id="localVideo" autoplay playsinline></video>
+    <video id="remoteVideo" autoplay playsinline></video>
+    <button onclick="startCall()">Start Call</button>
+    <button onclick="endCall()">End Call</button>
+
+    <script>
+        const ws = new WebSocket("ws://156.62.140.74:3000");
+        let peerConnection;
+        let localStream;
+        let remoteStream;
+        let myId = Math.random().toString(36).substring(7);
+        let peerId;
+
+        ws.onopen = () => ws.send(JSON.stringify({ type: "register", id: myId }));
+
+        function createPeerConnection() {
+            peerConnection = new RTCPeerConnection({
+                iceServers: [
+                    {
+                        urls: "turn:server.bcis-rnd.xyz:3478", // Correctly formatted TURN server URL
+                        username: "guest",
+                        credential: "somepassword"
+                    }
+                ],
+                iceTransportPolicy: "relay"  // FORCES TURN ONLY
+            });
+
+            peerConnection.ontrack = event => {
+                document.getElementById("remoteVideo").srcObject = event.streams[0];
+            };
+
+            peerConnection.onicecandidate = event => {
+                if (event.candidate) {
+                    ws.send(JSON.stringify({ type: "candidate", to: peerId, candidate: event.candidate }));
+                }
+            };
+
+            peerConnection.oniceconnectionstatechange = () => {
+                console.log(`ICE connection state: ${peerConnection.iceConnectionState}`);
+                if (peerConnection.iceConnectionState === 'failed') {
+                    console.error('ICE connection failed');
+                }
+            };
+
+            peerConnection.onerror = error => {
+                console.error('Peer connection error:', error);
+            };
+        }
+
+        async function startCall() {
+            createPeerConnection();
+            try {
+                localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                document.getElementById("localVideo").srcObject = localStream;
+
+                localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+
+                let offer = await peerConnection.createOffer();
+                await peerConnection.setLocalDescription(offer);
+                ws.send(JSON.stringify({ type: "offer", to: peerId, offer }));
+            } catch (error) {
+                console.error('Error accessing media devices:', error);
+            }
+        }
+
+        function endCall() {
+            if (peerConnection) {
+                peerConnection.close();
+                peerConnection = null;
+            }
+            if (localStream) {
+                localStream.getTracks().forEach(track => track.stop());
+                localStream = null;
+            }
+            document.getElementById("localVideo").srcObject = null;
+            document.getElementById("remoteVideo").srcObject = null;
+            ws.close();
+        }
+
+        ws.onmessage = async (message) => {
+            let data = JSON.parse(message.data);
+            if (data.type === "offer") {
+                peerId = data.from;
+                createPeerConnection();
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(data.offer));
+                let answer = await peerConnection.createAnswer();
+                await peerConnection.setLocalDescription(answer);
+                ws.send(JSON.stringify({ type: "answer", to: data.from, answer }));
+            } else if (data.type === "answer") {
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
+            } else if (data.type === "candidate") {
+                await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+            }
+        };
+    </script>
+</body>
+</html>
